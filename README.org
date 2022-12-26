@@ -3,11 +3,19 @@
 This repo contains emacs lisp code, to add the possibility
 to accept email invitations within  notmuch. 
 
-The file was found at
+I found this code by a reddit post
+- https://www.reddit.com/r/orgmode/comments/5odzem/accept_calendar_invitation_icalics_in_mail
+
+and found the file at
 - https://github.com/larkery/emacs-bankruptcy/blob/master/site-lisp/notmuch-calendar-x.el
 
-which was not working out of the box at emacs 27. I changed some part so it works at least 
-to capture invitations in an own emacs org file (specified by notmuch-calendar-capture-target).
+It was not working out of the box at emacs 27 (at least on my installation), so I changed some 
+part of it. Now it works (for me) to capture invitations in an own emacs org file 
+(specified by notmuch-calendar-capture-target).
+
+As I am not an expierenced emacs lisper, I don't understand very much of the code, but fortunately 
+enough to adjust it for my need. Any help to improve this is welcome. It would be nice, if this might
+evolve to a solution for invitations with emacs/notmuch.
 
 * Working parts
 
