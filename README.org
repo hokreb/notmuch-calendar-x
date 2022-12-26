@@ -1,0 +1,30 @@
+* Introduction
+
+This repo contains emacs lisp code, to add the possibility
+to accept email invitations within  notmuch. 
+
+The file was found at
+- https://github.com/larkery/emacs-bankruptcy/blob/master/site-lisp/notmuch-calendar-x.el
+
+which was not working out of the box at emacs 27. I changed some part so it works at least 
+to capture invitations in an own emacs org file (specified by notmuch-calendar-capture-target).
+
+* Working parts
+
+The following parts are working as by my observations
+
+- showing the invitatioin and showing the day of the event as an agenda overview
+- capture invitations from emails within notmuch
+- sending invitations from an org-mode event (by M-x notmuch-calendar-send-org-invitation)
+
+
+* Not sure if it works
+
+- acceptance of invitations (at the moment an email is opened with the reply, 
+  but I have not tested, if this is working correctly, when I send it
+  
+- rejecting an invitation, newer tried it jet
+
+- tentative for an invitation
+
+
