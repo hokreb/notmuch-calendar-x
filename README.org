@@ -27,13 +27,19 @@ evolve to a solution for invitations with emacs/notmuch.
 - acceptance of invitations (tested with mail provider mailbox.org)
 - rejecting an invitation (tested with mail provider mailbox.org)
 - sending invitations from an org-mode event by calling notmuch-calendar-send-org-invitation
-  with M-x (tested with mail provider mailbox.org), the organiser and attendees has to be manual
-  added. The timezone of the acceptance answer was incorrect (see known problems)
+  with M-x (tested with mail provider mailbox.org)
 
-** known problems
+** possible problems
 
-- timezones are not handled correctly, only the X-WR-TIMEZONE tag of ics is set, 
-  for some external calendars, this is not enough (eg mail provider mailbox.org)   
+- timezones were not handled correctly in the beginning, as only the X-WR-TIMEZONE tag of ics is set, 
+  I inserted a block of 
+  
+  BEGIN:VTIMEZONE
+  TZID:Europe/Berlin
+  END:VTIMEZONE
+  
+  with this, the timezone was correctly handled at least by mailbox.org.
+  To adjust the timezone, the var org-icalendar-timezone should be set.
 
 ** not implemented
 
