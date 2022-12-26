@@ -28,8 +28,12 @@ The following parts are working as by my observations
 
 ** Not sure if it works
 
+- maybe timezones are not handled correctly
+
 - acceptance of invitations (at the moment an email is opened with the reply, 
-  but I have not tested, if this is working correctly, when I send it
+  but I have not tested, if this is working correctly, when I send it.
+  You will find some message calls in the code, I use it for understanding the
+  flow of the code.
   
 - rejecting an invitation, newer tried it jet
 
