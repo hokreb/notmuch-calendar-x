@@ -17,26 +17,25 @@ As I am not an expierenced emacs lisper, I don't understand very much of the cod
 enough to adjust it for my need. Any help to improve this is welcome. It would be nice, if this might
 evolve to a solution for invitations with emacs/notmuch.
 
-** Working parts
-
-The following parts are working as by my observations
+** Working parts (tested by day to day use since several months)
 
 - showing the invitatioin and showing the day of the event as an agenda overview
 - capture invitations from emails within notmuch
-- sending invitations from an org-mode event (by M-x notmuch-calendar-send-org-invitation)
 
+** seems to work, but not extensively tested
 
-** Not sure if it works
+- acceptance of invitations (tested with mail provider mailbox.org)
+- rejecting an invitation (tested with mail provider mailbox.org)
+- sending invitations from an org-mode event by calling notmuch-calendar-send-org-invitation
+  with M-x (tested with mail provider mailbox.org), the organiser and attendees has to be manual
+  added. The timezone of the acceptance answer was incorrect (see known problems)
 
-- maybe timezones are not handled correctly
+** known problems
 
-- acceptance of invitations (at the moment an email is opened with the reply, 
-  but I have not tested, if this is working correctly, when I send it.
-  You will find some message calls in the code, I use it for understanding the
-  flow of the code.
-  
-- rejecting an invitation, newer tried it jet
+- timezones are not handled correctly, only the X-WR-TIMEZONE tag of ics is set, 
+  for some external calendars, this is not enough (eg mail provider mailbox.org)   
 
-- tentative for an invitation
+** not implemented
 
+- tentative replies
 
