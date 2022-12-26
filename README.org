@@ -34,10 +34,11 @@ evolve to a solution for invitations with emacs/notmuch.
 - timezones were not handled correctly in the beginning, as only the X-WR-TIMEZONE tag of ics is set, 
   I inserted a block of 
   
+  #+begin_src
   BEGIN:VTIMEZONE
   TZID:Europe/Berlin
   END:VTIMEZONE
-  
+  #+end_src
   with this, the timezone was correctly handled at least by mailbox.org.
   To adjust the timezone, the var org-icalendar-timezone should be set.
 
