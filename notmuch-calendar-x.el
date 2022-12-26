@@ -1,662 +1,659 @@
-  ;;; notmuch-calendar-x.el --- integrate notmuch with calendar
+;;; notmuch-calendar-x.el --- integrate notmuch with calendar
 
-  ;;; Commentary:
+;;; Commentary:
 
-  ;; A grim hack by tom hinton.
-  ;; makes notmuch work with icalendar, including buttons; derived from notmuch-calendar-import.el by Vagn Johansen.
+;; A grim hack by tom hinton.
+;; makes notmuch work with icalendar, including buttons; derived from notmuch-calendar-import.el by Vagn Johansen.
 
-  ;;; Code:
+;;; Code:
+
+(setq org-icalendar-timezone "Europe/Berlin")
+
+(setq notmuch-calendar-capture-target
+      '("~/meetings.org"))
+
+(setq notmuch-calendar-default-tags '())
 
 
-    (setq notmuch-calendar-capture-target
-            '("~/meetings.org"))
+(defun notmuch-calendar-email-link (email)
+  ;; avoid double mailto
+  (format "[[mailto:%s]]"
+          (if (string-match (rx bos (| "mailto:" "MAILTO:") (group (* any))) email)
+              (match-string 1 email)
+            email)))
 
-    (setq notmuch-calendar-default-tags '())
+(defun notmuch-calendar-email-unlink (link)
+  (when (and link (string-match (rx bos "[[mailto:" (group (* any)) "]]" eos) link))
+    (match-string 1 link)))
+
+;;;; modifying display in notmuch-show to be org-ish
+
+(defun notmuch-calendar-datetime->iso (datetime)
+  "Convert a date retrieved via `icalendar--get-event-property' to ISO format."
+  (if datetime
+    (format "%04d-%02d-%02d"
+      (nth 5 datetime)                  ; Year
+      (nth 4 datetime)                  ; Month
+      (nth 3 datetime))))               ; Day
+
+(defun notmuch-calendar-ical->org-timestring (c e)
+
+  (let* ((zone-map (icalendar--convert-all-timezones c))
+         (dtstart (icalendar--get-event-property e 'DTSTART))
+         (dtstart-zone (icalendar--find-time-zone
+                        (icalendar--get-event-property-attributes e 'DTSTART)
+                        zone-map))
+         (dtstart-dec (icalendar--decode-isodatetime dtstart nil dtstart-zone))
+         (start-d (notmuch-calendar-datetime->iso dtstart-dec))
+         (start-t (icalendar--datetime-to-colontime dtstart-dec))
+         (dtend (icalendar--get-event-property e 'DTEND))
+         (dtend-zone (icalendar--find-time-zone
+                      (icalendar--get-event-property-attributes e 'DTEND)
+                      zone-map))
+         (dtend-dec (icalendar--decode-isodatetime dtend nil dtend-zone))
+         end-d end-t
+
+         (rrule (icalendar--get-event-property e 'RRULE))
+         (rdate (icalendar--get-event-property e 'RDATE))
+         (duration (icalendar--get-event-property e 'DURATION)))
+
+    (setq end-d (if dtend-dec
+                  (notmuch-calendar-datetime->iso dtend-dec)
+                  start-d))
+    (setq end-t (if (and
+                      dtend-dec
+                      (not (string=
+                             (cadr
+                               (icalendar--get-event-property-attributes
+                                 e 'DTEND))
+                             "DATE")))
+                  (icalendar--datetime-to-colontime dtend-dec)
+                  start-t))
+    ;; Store in kill-ring
+      (if (equal start-d end-d)
+        (format "<%s %s-%s>" start-d start-t end-t)
+        ;; else
+        (format "<%s %s>--<%s %s>" start-d start-t end-d end-t))))
+
+(defun notmuch-calendar-event-insert-agenda (c e)
+  "Render the day agenda for the day of this event into current message"
+  (let* ((location (icalendar--get-event-property e 'LOCATION))
+         (organizer (icalendar--get-event-property e 'ORGANIZER))
+         (summary (icalendar--convert-string-for-import
+                   (or (icalendar--get-event-property e 'SUMMARY) "")))
+         (comment (icalendar--convert-string-for-import
+                   (or (icalendar--get-event-property e 'COMMENT) "")))            
+         (attendees (icalendar--get-event-properties e 'ATTENDEE))
+         (org-timestr (notmuch-calendar-ical->org-timestring c e))
+         (time-parts (org-parse-time-string org-timestr))
+         (minutes (nth 1 time-parts))
+         (hours (nth 2 time-parts))
+         (day (nth 3 time-parts))
+         (month (nth 4 time-parts))
+         (year (nth 5 time-parts)))
+
+    (unless (string-match-p (rx bos (* blank) eos) summary)
+      (insert summary))
+
+    (when location
+      (unless (string-match-p (rx bos (* blank) eos) location) (insert " [" location "]")))
+
+    (insert " @ ")
+
+    (insert-button org-timestr
+                   :type 'notmuch-show-part-button-type
+                   'action #'org-open-at-mouse)
 
 
-      (defun notmuch-calendar-email-link (email)
-        ;; avoid double mailto
-        (format "[[mailto:%s]]"
-                (if (string-match (rx bos (| "mailto:" "MAILTO:") (group (* any))) email)
-                    (match-string 1 email)
-                  email)))
+    (unless (string-match-p (rx bos (* blank) eos) comment)
+      (insert comment "\n"))
 
-      (defun notmuch-calendar-email-unlink (link)
-        (when (and link (string-match (rx bos "[[mailto:" (group (* any)) "]]" eos) link))
-          (match-string 1 link)))
+    (insert "\n--------------\n")
 
-      ;;;; modifying display in notmuch-show to be org-ish
+    (let* ((wins (current-window-configuration))
+           (org-agenda-sticky t)
+           (inhibit-redisplay t)
+           org-agenda-mail-buffer
 
-      (defun notmuch-calendar-datetime->iso (datetime)
-        "Convert a date retrieved via `icalendar--get-event-property' to ISO format."
-        (if datetime
-          (format "%04d-%02d-%02d"
-            (nth 5 datetime)                  ; Year
-            (nth 4 datetime)                  ; Month
-            (nth 3 datetime))))               ; Day
+           (org-agenda-custom-commands
+            '(("q" "Mail agenda" ((agenda ""))))
+            )
+           )
+      (org-eval-in-environment (org-make-parameter-alist
+                                `(org-agenda-span
+                                  'day
+                                  ;;org-agenda-buffer-name " *notmuch-agenda-buffer*"
+                                  org-agenda-start-day ,(format "%04d-%02d-%02d"
+                                                                year month day)
+                                  org-agenda-use-time-grid t
+                                  org-agenda-remove-tags t
+                                  org-agenda-window-setup 'nope))
+        (progn
+          (save-excursion
+            (org-agenda nil "q")
+            (org-agenda-redo)
+            (setq org-agenda-mail-buffer (current-buffer)))
+          (set-window-configuration wins)
+          (let ((p (point))
+                pa)
+            ;; copy text
+            (insert-buffer-substring org-agenda-mail-buffer)
 
-      (defun notmuch-calendar-ical->org-timestring (c e)
+            ;; copy markers
+            (save-restriction
+              (narrow-to-region p (point))
+              (let ((org-marker-regions
+                     (with-current-buffer
+                         org-agenda-mail-buffer
+                       (setq pa (point-min))
+                       (gnus-find-text-property-region (point-min) (point-max) 'org-marker))))
+                (cl-loop for marker in org-marker-regions
+                      do
+                      (add-text-properties
+                       (+ p (- (car marker) pa)) (+ p (- (cadr marker) pa))
+                       `(org-marker
+                         ,(copy-marker (get-text-property (car marker) 'org-marker org-agenda-mail-buffer))))
 
-        (let* ((zone-map (icalendar--convert-all-timezones c))
-               (dtstart (icalendar--get-event-property e 'DTSTART))
-               (dtstart-zone (icalendar--find-time-zone
-                              (icalendar--get-event-property-attributes e 'DTSTART)
-                              zone-map))
-               (dtstart-dec (icalendar--decode-isodatetime dtstart nil dtstart-zone))
-               (start-d (notmuch-calendar-datetime->iso dtstart-dec))
-               (start-t (icalendar--datetime-to-colontime dtstart-dec))
-               (dtend (icalendar--get-event-property e 'DTEND))
-               (dtend-zone (icalendar--find-time-zone
-                            (icalendar--get-event-property-attributes e 'DTEND)
-                            zone-map))
-               (dtend-dec (icalendar--decode-isodatetime dtend nil dtend-zone))
-               end-d end-t
+                      (set-marker (car marker) nil)
+                      (set-marker (cadr marker) nil))))
 
-               (rrule (icalendar--get-event-property e 'RRULE))
-               (rdate (icalendar--get-event-property e 'RDATE))
-               (duration (icalendar--get-event-property e 'DURATION)))
+            ;; copy faces via font-lock-face
+            (save-restriction
+              (narrow-to-region p (point))
+              (let ((face-regions (gnus-find-text-property-region (point-min) (point-max) 'face)))
+                (cl-loop for range in face-regions
+                      do
+                      (let ((face (get-text-property (car range) 'face)))
+                        (add-text-properties
+                         (car range) (cadr range)
+                         `(font-lock-face ,face)))
 
-          (setq end-d (if dtend-dec
-                        (notmuch-calendar-datetime->iso dtend-dec)
-                        start-d))
-          (setq end-t (if (and
-                            dtend-dec
-                            (not (string=
-                                   (cadr
-                                     (icalendar--get-event-property-attributes
-                                       e 'DTEND))
-                                   "DATE")))
-                        (icalendar--datetime-to-colontime dtend-dec)
-                        start-t))
-          ;; Store in kill-ring
-            (if (equal start-d end-d)
-              (format "<%s %s-%s>" start-d start-t end-t)
-              ;; else
-              (format "<%s %s>--<%s %s>" start-d start-t end-d end-t))))
 
-    (defun notmuch-calendar-event-insert-agenda (c e)
-        "Render the day agenda for the day of this event into current message"
-        (let* ((location (icalendar--get-event-property e 'LOCATION))
-               (organizer (icalendar--get-event-property e 'ORGANIZER))
-               (summary (icalendar--convert-string-for-import
-                         (or (icalendar--get-event-property e 'SUMMARY) "")))
-               (comment (icalendar--convert-string-for-import
-                         (or (icalendar--get-event-property e 'COMMENT) "")))            
-               (attendees (icalendar--get-event-properties e 'ATTENDEE))
-               (org-timestr (notmuch-calendar-ical->org-timestring c e))
-               (time-parts (org-parse-time-string org-timestr))
-               (minutes (nth 1 time-parts))
-               (hours (nth 2 time-parts))
-               (day (nth 3 time-parts))
-               (month (nth 4 time-parts))
-               (year (nth 5 time-parts)))
+                      (set-marker (car range) nil)
+                      (set-marker (cadr range) nil))))
 
-          (unless (string-match-p (rx bos (* blank) eos) summary)
-            (insert summary))
+            (kill-buffer org-agenda-mail-buffer)
+            (put-text-property p (point) 'keymap
+                               org-agenda-keymap)))
+        ))))
 
-          (when location
-            (unless (string-match-p (rx bos (* blank) eos) location) (insert " [" location "]")))
+(defun notmuch-calendar-event-insert-buttons (c e)
+  (let* ((inhibit-redisplay t)
+         (method (icalendar--get-event-property (car c) 'METHOD))
+         (sequence (string-to-number
+                    (or (icalendar--get-event-property e 'SEQUENCE) "0")))
+         (uid (icalendar--get-event-property e 'UID))
 
-          (insert " @ ")
+         (existing-entry (org-id-find uid t))
 
-          (insert-button org-timestr
+         (existing-sequence
+          (or (when existing-entry
+                (string-to-number
+                 (or (with-current-buffer (marker-buffer existing-entry)
+                       (save-excursion
+                         (goto-char (marker-position existing-entry))
+                         (org-entry-get (point) "SEQUENCE")))
+                     "-1"))) -1))
+
+         (is-update
+          (and existing-entry (> sequence existing-sequence)))
+         )
+    (cond
+     ((and is-update (string= method "REPLY"))
+      (insert-button "[ Update ]" :type 'notmuch-show-part-button-type
+                     'action #'notmuch-calendar-update-reply
+                     'org-event existing-entry
+                     'calendar-event e)
+      (insert "\n"))
+
+     ((and (> sequence existing-sequence) (string= method "REQUEST"))
+      (let ((msg (if is-update "change " "")))
+        (dolist (response '(accept reject capture))
+          (insert-button (format "[ %s %s]" response msg)
                          :type 'notmuch-show-part-button-type
-                         'action #'org-open-at-mouse)
+                         'action #'notmuch-calendar-handle-request
+                         'response response
+                         'org-event existing-entry
+                         'calendar-content c
+                         'calendar-event e)
+          (insert " "))
+        (insert "\n")))
 
+     ((<= existing-sequence sequence)
+      (insert "Event is already in calendar\n"))
 
-          (unless (string-match-p (rx bos (* blank) eos) comment)
-            (insert comment "\n"))
+     )))
 
-          (insert "\n--------------\n")
+(defun notmuch-calendar-handle-request (button)
+  "What happens when you click a button in a request method invite"
+  (let* ((button-properties (overlay-properties button))
+         (response (plist-get button-properties 'response))
+         (org-event (plist-get button-properties 'org-event))
+         (calendar-content (plist-get button-properties 'calendar-content))
+         (calendar-event (plist-get button-properties 'calendar-event)))              
+    ;; send a response
 
-          (let* ((wins (current-window-configuration))
-                 (org-agenda-sticky t)
-                 (inhibit-redisplay t)
-                 org-agenda-mail-buffer
+    (notmuch-calendar-respond response)
+    ;; capture it or update it
+    (require 'org-id)
+    (unless (eq response 'reject)
+      (when org-event
+        (with-current-buffer (marker-buffer org-event)
+          (save-excursion
+            (goto-char (marker-position org-event))
+            (org-cut-subtree)
+            (message "Previous version of event is in the kill ring"))))
+      (let* ((zone-map (icalendar--convert-all-timezones calendar-content))
+             (dtstart (icalendar--get-event-property calendar-event 'DTSTART))
+             (dtstart-zone (icalendar--find-time-zone
+                            (icalendar--get-event-property-attributes calendar-event 'DTSTART)
+                            zone-map))
+             (event-date (apply 'encode-time (icalendar--decode-isodatetime dtstart nil dtstart-zone)))
+             (path (mapcar (lambda (x) (format-time-string x event-date)) notmuch-calendar-capture-target))
+             (stars (make-string (length notmuch-calendar-capture-target) ?*))
 
-                 (org-agenda-custom-commands
-                  '(("q" "Mail agenda" ((agenda ""))))
-                  )
-                 )
-            (org-eval-in-environment (org-make-parameter-alist
-                                      `(org-agenda-span
-                                        'day
-                                        ;;org-agenda-buffer-name " *notmuch-agenda-buffer*"
-                                        org-agenda-start-day ,(format "%04d-%02d-%02d"
-                                                                      year month day)
-                                        org-agenda-use-time-grid t
-                                        org-agenda-remove-tags t
-                                        org-agenda-window-setup 'nope))
-              (progn
-                (save-excursion
-                  (org-agenda nil "q")
-                  (org-agenda-redo)
-                  (setq org-agenda-mail-buffer (current-buffer)))
-                (set-window-configuration wins)
-                (let ((p (point))
-                      pa)
-                  ;; copy text
-                  (insert-buffer-substring org-agenda-mail-buffer)
+             (location (icalendar--get-event-property calendar-event 'LOCATION))
+             (organizer (icalendar--get-event-property calendar-event 'ORGANIZER))
+             (summary (icalendar--convert-string-for-import
+                       (or (icalendar--get-event-property calendar-event 'SUMMARY)
+                           "No summary")))
+             (description (icalendar--convert-string-for-import
+                       (or (icalendar--get-event-property calendar-event 'DESCRIPTION)
+                           "No description")))
+             (comment (icalendar--convert-string-for-import
+                       (or (icalendar--get-event-property calendar-event 'COMMENT)
+                           "")))                 
+             (attendees (icalendar--get-event-properties calendar-event 'ATTENDEE))
 
-                  ;; copy markers
-                  (save-restriction
-                    (narrow-to-region p (point))
-                    (let ((org-marker-regions
-                           (with-current-buffer
-                               org-agenda-mail-buffer
-                             (setq pa (point-min))
-                             (gnus-find-text-property-region (point-min) (point-max) 'org-marker))))
-                      (cl-loop for marker in org-marker-regions
-                            do
-                            (add-text-properties
-                             (+ p (- (car marker) pa)) (+ p (- (cadr marker) pa))
-                             `(org-marker
-                               ,(copy-marker (get-text-property (car marker) 'org-marker org-agenda-mail-buffer))))
+             (uid (icalendar--get-event-property calendar-event 'UID))
+             (seq (icalendar--get-event-property calendar-event 'SEQUENCE))
+             )
+        (require 'org-util)
+        (require 'org-id)
 
-                            (set-marker (car marker) nil)
-                            (set-marker (cadr marker) nil))))
+        (let ((target-buffer
+               (org-goto-path (reverse (cons summary (reverse path))) #'find-file-noselect)))
+          (display-buffer target-buffer '(display-buffer-pop-up-window))
+          (with-current-buffer
+              target-buffer
+            (widen)
 
-                  ;; copy faces via font-lock-face
-                  (save-restriction
-                    (narrow-to-region p (point))
-                    (let ((face-regions (gnus-find-text-property-region (point-min) (point-max) 'face)))
-                      (cl-loop for range in face-regions
-                            do
-                            (let ((face (get-text-property (car range) 'face)))
-                              (add-text-properties
-                               (car range) (cadr range)
-                               `(font-lock-face ,face)))
+            (outline-show-all)
+            (when (org-at-heading-p)
+              (end-of-line)
+              (insert "\n"))
+            (insert  (notmuch-calendar-ical->org-timestring calendar-content calendar-event) "\n")
+            ;; insert a heading for this event
+            ;; add the ID to the database
+            (when uid
+              (org-set-property "ID" uid)
+              (org-id-add-location uid (buffer-file-name)))
+            (when seq (org-set-property "SEQUENCE" seq))
+            (when location (org-set-property "LOCATION" location))
+            (when organizer (org-set-property "ORGANIZER" (format "[[%s]]" organizer)))
+            (apply #'org-entry-put-multivalued-property (point) "ATTENDING"
+                   (mapcar #'notmuch-calendar-email-link attendees))
+            (when (> (length comment) 0) (org-set-property "COMMENT" (format "[[%s]]" comment)))
+            ;(when description (org-set-property "DESCRIPTION" (format "[[%s]]" description)))
+            (org-set-tags notmuch-calendar-default-tags)
+            (when description (insert (format "%s" description)))
 
+            ;;          (outline-hide-other)
+            ))))))
 
-                            (set-marker (car range) nil)
-                            (set-marker (cadr range) nil))))
+;; TODO handle calendar REPLY method
 
-                  (kill-buffer org-agenda-mail-buffer)
-                  (put-text-property p (point) 'keymap
-                                     org-agenda-keymap)))
-              ))))
+(defun notmuch-calendar-respond (response)
+  (require 'ox-icalendar)
 
-      (defun notmuch-calendar-event-insert-buttons (c e)
-        (let* ((inhibit-redisplay t)
-               (method (icalendar--get-event-property (car c) 'METHOD))
-               (sequence (string-to-number
-                          (or (icalendar--get-event-property e 'SEQUENCE) "0")))
-               (uid (icalendar--get-event-property e 'UID))
+  (when (member response '(reject accept))
+    (notmuch-show-tag (cl-case response (reject '("+rejected")) (accept '("+accepted"))))
+    (let ((mm-inlined-types nil)
+          (to (notmuch-show-get-to))
 
-               (existing-entry (org-id-find uid t))
+          (partstat (upcase (format "partstat=%sed" response)))
+          (subject (capitalize (format "%sed: %s" response (notmuch-show-get-subject))))
 
-               (existing-sequence
-                (or (when existing-entry
-                      (string-to-number
-                       (or (with-current-buffer (marker-buffer existing-entry)
-                             (save-excursion
-                               (goto-char (marker-position existing-entry))
-                               (org-entry-get (point) "SEQUENCE")))
-                           "-1"))) -1))
+          to-re
+          response
+          handle-coding
+          organizer)
 
-               (is-update
-                (and existing-entry (> sequence existing-sequence)))
-               )
-          (cond
-           ((and is-update (string= method "REPLY"))
-            (insert-button "[ Update ]" :type 'notmuch-show-part-button-type
-                           'action #'notmuch-calendar-update-reply
-                           'org-event existing-entry
-                           'calendar-event e)
-            (insert "\n"))
+      ;; find mail addresses we have which may relate to the to: header
+      ;; TODO what about cc: header?
+      ;; TODO what if fccdirs header is too general
 
-           ((and (> sequence existing-sequence) (string= method "REQUEST"))
-            (let ((msg (if is-update "change " "")))
-              (dolist (response '(accept reject capture))
-                (insert-button (format "[ %s %s]" response msg)
-                               :type 'notmuch-show-part-button-type
-                               'action #'notmuch-calendar-handle-request
-                               'response response
-                               'org-event existing-entry
-                               'calendar-content c
-                               'calendar-event e)
-                (insert " "))
-              (insert "\n")))
+      (dolist (fcc notmuch-fcc-dirs)
+        (let ((re (car fcc)))
+          (if (string-match re to)
+              (progn (push re to-re)))))
 
-           ((<= existing-sequence sequence)
-            (insert "Event is already in calendar\n"))
+      (notmuch-show-apply-to-current-part-handle
+       (lambda (handle)
+         (with-temp-buffer
+           (mm-insert-part handle)
+           ;; now we need to edit some lines, and then fold them?
+           (set-buffer (icalendar--get-unfolded-buffer (current-buffer)))
+           (goto-char (point-min))
+           (delete-trailing-whitespace)
+           ;; we need to fix DTSTAMP and our ATTENDEE lines?
+           ;; ATTENDEE lines - foreach RE that we know, try mangling lines
+           (dolist (re to-re)
+             (goto-char (point-min))
+             (while (re-search-forward
+                     (rx-to-string
+                      `(and bol
+                            "ATTENDEE;"
+                            (zero-or-more anything)
+                            "PARTSTAT=NEEDS-ACTION"
+                            (zero-or-more nonl)
+                            (regexp ,re)) t) nil t)
+               (goto-char (match-beginning 0))
+               (if (re-search-forward "PARTSTAT=NEEDS-ACTION"
+                                      nil t)
+                   (replace-match partstat))))
 
+           (goto-char (point-min))
+           (if (re-search-forward (rx bol (group "PRODID:" (one-or-more nonl)) eol) nil t)
+               (replace-match "PRODID:Emacs / notmuch"))
+           ;; do method
+           (goto-char (point-min))
+           (if (re-search-forward (rx bol (group "METHOD:" (one-or-more nonl)) eol) nil t)
+               (replace-match "METHOD:REPLY"))
+           ;; now do DTSTAMP DTSTAMP:20151006T125408Z
+           (goto-char (point-min))
+           (if (re-search-forward (rx bol (group "DTSTAMP:" (one-or-more nonl)) eol) nil t)
+               (replace-match (org-icalendar-dtstamp)))
+
+           ;; find the organizer line to reply to
+           (goto-char (point-min))
+           (if (re-search-forward (rx bol "ORGANIZER;"
+                                      (one-or-more nonl)
+                                      ":MAILTO:"
+                                      (group (one-or-more nonl)) eol) nil t)
+               (setq organizer (match-string-no-properties 1)))
+
+           (setq response (decode-coding-string
+                           (string-make-unibyte
+                            (buffer-substring-no-properties (point-min) (point-max)))
+                           'utf-8))
            )))
 
-      (defun notmuch-calendar-handle-request (button)
-        "What happens when you click a button in a request method invite"
-        (let* ((button-properties (overlay-properties button))
-               (response (plist-get button-properties 'response))
-               (org-event (plist-get button-properties 'org-event))
-               (calendar-content (plist-get button-properties 'calendar-content))
-               (calendar-event (plist-get button-properties 'calendar-event)))              
-          ;; send a response
-
-          (notmuch-calendar-respond response)
-          ;; capture it or update it
-          (require 'org-id)
-          (unless (eq response 'reject)
-            (when org-event
-              (with-current-buffer (marker-buffer org-event)
-                (save-excursion
-                  (goto-char (marker-position org-event))
-                  (org-cut-subtree)
-                  (message "Previous version of event is in the kill ring"))))
-            (let* ((zone-map (icalendar--convert-all-timezones calendar-content))
-                   (dtstart (icalendar--get-event-property calendar-event 'DTSTART))
-                   (dtstart-zone (icalendar--find-time-zone
-                                  (icalendar--get-event-property-attributes calendar-event 'DTSTART)
-                                  zone-map))
-                   (event-date (apply 'encode-time (icalendar--decode-isodatetime dtstart nil dtstart-zone)))
-                   (path (mapcar (lambda (x) (format-time-string x event-date)) notmuch-calendar-capture-target))
-                   (stars (make-string (length notmuch-calendar-capture-target) ?*))
-
-                   (location (icalendar--get-event-property calendar-event 'LOCATION))
-                   (organizer (icalendar--get-event-property calendar-event 'ORGANIZER))
-                   (summary (icalendar--convert-string-for-import
-                             (or (icalendar--get-event-property calendar-event 'SUMMARY)
-                                 "No summary")))
-                   (description (icalendar--convert-string-for-import
-                             (or (icalendar--get-event-property calendar-event 'DESCRIPTION)
-                                 "No description")))
-                   (comment (icalendar--convert-string-for-import
-                             (or (icalendar--get-event-property calendar-event 'COMMENT)
-                                 "")))                 
-                   (attendees (icalendar--get-event-properties calendar-event 'ATTENDEE))
-
-                   (uid (icalendar--get-event-property calendar-event 'UID))
-                   (seq (icalendar--get-event-property calendar-event 'SEQUENCE))
-                   )
-              (require 'org-util)
-              (require 'org-id)
-
-              (let ((target-buffer
-                     (org-goto-path (reverse (cons summary (reverse path))) #'find-file-noselect)))
-                (display-buffer target-buffer '(display-buffer-pop-up-window))
-                (with-current-buffer
-                    target-buffer
-                  (widen)
-
-                  (outline-show-all)
-                  (when (org-at-heading-p)
-                    (end-of-line)
-                    (insert "\n"))
-                  (insert  (notmuch-calendar-ical->org-timestring calendar-content calendar-event) "\n")
-                  ;; insert a heading for this event
-                  ;; add the ID to the database
-                  (when uid
-                    (org-set-property "ID" uid)
-                    (org-id-add-location uid (buffer-file-name)))
-                  (when seq (org-set-property "SEQUENCE" seq))
-                  (when location (org-set-property "LOCATION" location))
-                  (when organizer (org-set-property "ORGANIZER" (format "[[%s]]" organizer)))
-                  (apply #'org-entry-put-multivalued-property (point) "ATTENDING"
-                         (mapcar #'notmuch-calendar-email-link attendees))
-                  (when (> (length comment) 0) (org-set-property "COMMENT" (format "[[%s]]" comment)))
-                  ;(when description (org-set-property "DESCRIPTION" (format "[[%s]]" description)))
-                  (org-set-tags notmuch-calendar-default-tags)
-                  (when description (insert (format "%s" description)))
-
-                  ;;          (outline-hide-other)
-                  ))))))
-
-      ;; TODO handle calendar REPLY method
-
-      (defun notmuch-calendar-respond (response)
-        (require 'ox-icalendar)
-
-        (when (member response '(reject accept))
-          (notmuch-show-tag (cl-case response (reject '("+rejected")) (accept '("+accepted"))))
-          (let ((mm-inlined-types nil)
-                (to (notmuch-show-get-to))
-
-                (partstat (upcase (format "partstat=%sed" response)))
-                (subject (capitalize (format "%sed: %s" response (notmuch-show-get-subject))))
-
-                to-re
-                response
-                handle-coding
-                organizer)
-
-            ;; find mail addresses we have which may relate to the to: header
-            ;; TODO what about cc: header?
-            ;; TODO what if fccdirs header is too general
-
-            (dolist (fcc notmuch-fcc-dirs)
-              (let ((re (car fcc)))
-                (if (string-match re to)
-                    (progn (push re to-re)))))
-
-            (notmuch-show-apply-to-current-part-handle
-             (lambda (handle)
-               (with-temp-buffer
-                 (mm-insert-part handle)
-                 ;; now we need to edit some lines, and then fold them?
-                 (set-buffer (icalendar--get-unfolded-buffer (current-buffer)))
-                 (goto-char (point-min))
-                 (delete-trailing-whitespace)
-                 ;; we need to fix DTSTAMP and our ATTENDEE lines?
-                 ;; ATTENDEE lines - foreach RE that we know, try mangling lines
-                 (dolist (re to-re)
-                   (goto-char (point-min))
-                   (while (re-search-forward
-                           (rx-to-string
-                            `(and bol
-                                  "ATTENDEE;"
-                                  (zero-or-more anything)
-                                  "PARTSTAT=NEEDS-ACTION"
-                                  (zero-or-more nonl)
-                                  (regexp ,re)) t) nil t)
-                     (goto-char (match-beginning 0))
-                     (if (re-search-forward "PARTSTAT=NEEDS-ACTION"
-                                            nil t)
-                         (replace-match partstat))))
-
-                 (goto-char (point-min))
-                 (if (re-search-forward (rx bol (group "PRODID:" (one-or-more nonl)) eol) nil t)
-                     (replace-match "PRODID:Emacs / notmuch"))
-                 ;; do method
-                 (goto-char (point-min))
-                 (if (re-search-forward (rx bol (group "METHOD:" (one-or-more nonl)) eol) nil t)
-                     (replace-match "METHOD:REPLY"))
-                 ;; now do DTSTAMP DTSTAMP:20151006T125408Z
-                 (goto-char (point-min))
-                 (if (re-search-forward (rx bol (group "DTSTAMP:" (one-or-more nonl)) eol) nil t)
-                     (replace-match (org-icalendar-dtstamp)))
-
-                 ;; find the organizer line to reply to
-                 (goto-char (point-min))
-                 (if (re-search-forward (rx bol "ORGANIZER;"
-                                            (one-or-more nonl)
-                                            ":MAILTO:"
-                                            (group (one-or-more nonl)) eol) nil t)
-                     (setq organizer (match-string-no-properties 1)))
-
-                 (setq response (decode-coding-string
-                                 (string-make-unibyte
-                                  (buffer-substring-no-properties (point-min) (point-max)))
-                                 'utf-8))
-                 )))
-
-            ;; TODO this is incorrect - the sender should be the ORGANIZER of the event
-            (message "test message 1")
-
-            (notmuch-mua-mail organizer subject ())
-            (message "test message 2")
-
-            (goto-char (point-max))
-            (message "test message 3")
-
-            (make-variable-buffer-local 'message-syntax-checks)
-            (push '(illegible-text . disabled) message-syntax-checks)
-            (message "test message 4")
-            (save-excursion
-              (mml-insert-part "text/calendar; method=REPLY")
-              (decode-coding-string (org-icalendar-fold-string response)
-                                    handle-coding
-                                    t (current-buffer)))
-
-                                              ;      (notmuch-mua-send-and-exit)
-            )
-            (message "test 5 message")
-
-          ))
+      ;; TODO this is incorrect - the sender should be the ORGANIZER of the event
+      (notmuch-mua-mail organizer subject ())
+      (goto-char (point-max))
+      (make-variable-buffer-local 'message-syntax-checks)
+      (push '(illegible-text . disabled) message-syntax-checks)
+      (save-excursion
+        (mml-insert-part "text/calendar; method=REPLY")
+        (decode-coding-string (org-icalendar-fold-string response)
+                              handle-coding
+                              t (current-buffer)))
+        (notmuch-mua-send-and-exit)
+      )
+    ))
 
 
-      (defun notmuch-calendar-icalendar-render (output-buffer fun)
-        "Transform icalendar events in the current buffer into org headlines and insert them into the output-buffer."
-        (save-current-buffer
-          (set-buffer (icalendar--get-unfolded-buffer (current-buffer)))
-          (goto-char (point-min))
-          (if (re-search-forward "^BEGIN:VCALENDAR\\s-*$" nil t)
-              (progn
-                (beginning-of-line)
-                (let* ((ical-contents (icalendar--read-element nil nil))
-                       (ical-events (icalendar--all-events ical-contents))
-                       (zone-map (icalendar--convert-all-timezones ical-contents)))
+(defun notmuch-calendar-icalendar-render (output-buffer fun)
+  "Transform icalendar events in the current buffer into org headlines and insert them into the output-buffer."
+  (save-current-buffer
+    (set-buffer (icalendar--get-unfolded-buffer (current-buffer)))
+    (goto-char (point-min))
+    (if (re-search-forward "^BEGIN:VCALENDAR\\s-*$" nil t)
+        (progn
+          (beginning-of-line)
+          (let* ((ical-contents (icalendar--read-element nil nil))
+                 (ical-events (icalendar--all-events ical-contents))
+                 (zone-map (icalendar--convert-all-timezones ical-contents)))
 
-                  (with-current-buffer output-buffer
-                    (let ((here (point)))
-                      (dolist (e ical-events)
-                        (funcall fun ical-contents e))
-                      (list here (point))))
-                  )))))
-
-
-      (defun notmuch-calendar--format-email (addr)
-        (let ((addr (mail-extract-address-components addr)))
-          (format "CN=%s:MAILTO:%s"
-                  (or (car addr)
-                      (cadr addr))
-                  (cadr addr))))
-
-      (defun notmuch-calendar-current-organizer ()
-        (let* ((cur
-                (notmuch-calendar-email-unlink (cdr (assoc "ORGANIZER" (org-entry-properties nil "ORGANIZER")))))
-               (cur (and cur (regexp-quote cur))))
-          (when cur
-            (car (remove-if-not
-                  (lambda (x) (string-match-p cur x))
-                  notmuch-identities)))))
-
-      (defun notmuch-calendar-current-attendees ()
-        (let ((cur (org-entry-get-multivalued-property (point) "ATTENDING")) out)
-          (mapconcat #'identity (mapcar #'notmuch-calendar-email-unlink cur) ", ")))
-
-      (defun icalendar--get-event-attendees (e)
-        (let ((props (car (cddr e))))
-          (cl-loop for prop in props
-                   when (eq (car prop) 'ATTENDEE)
-                   collect (cdr prop))))
-
-      (defun notmuch-calendar-update-reply (e)
-        (let* ((props (overlay-properties e))
-               (cal (car (plist-get props 'calendar-object)))
-               (evt (plist-get props 'calendar-event))
-               (uid (icalendar--get-event-property evt 'UID))
-               (uid2 (progn (when
-                                (string-match (rx bos (* alnum) "-" (group (* (| alnum "-"))) eos) uid)
-                              (match-string 1 uid))))
-               (entry (org-id-find uid2 t)))
-          (unless entry (error (format "No entry for UID: %s" uid2)))
-          (pop-to-buffer (marker-buffer entry))
-          (goto-char (marker-position entry))
-          (set-marker entry nil)
-          ;; update properties for attending?
-          (let ((existing-attendees (mapcar #'notmuch-calendar-email-unlink
-                                            (org-entry-get-multivalued-property (point) "ATTENDING")))
-                (new-attendees (icalendar--get-event-attendees evt)))
-            (dolist (a new-attendees)
-              (let* ((a-props (car a))
-                     (a-mail (cadr a))
-                     (state (plist-get a-props 'PARTSTAT))
-                     (addr (notmuch-calendar-email-unlink
-                            (notmuch-calendar-email-link a-mail))))
-                (message "%s" state)
-                (cond
-                  ((equal state "ACCEPTED")
-                   (unless (member addr existing-attendees)
-                     (push addr existing-attendees)))
-                  (t (message "wat: %s" state))
-                  )))
-            (message "%s" existing-attendees)
-            (apply #'org-entry-put-multivalued-property (point) "ATTENDING"
-                   (mapcar #'notmuch-calendar-email-link existing-attendees)))
-          ))
-
-      (defun notmuch-calendar-send-invitation-from-org (organizer attendees-list)
-        (interactive
-         (list (completing-read "Organizer: " notmuch-identities nil nil (notmuch-calendar-current-organizer))
-               (completing-read-multiple "Invite: " (notmuch-address-options "")
-                                         nil nil (notmuch-calendar-current-attendees))))
-
-        (unless organizer (error "No organizer"))
-        (unless attendees-list (error "No attendees"))
-
-        (org-set-property "ORGANIZER" (notmuch-calendar-email-link organizer))
-        (apply #'org-entry-put-multivalued-property (point) "ATTENDING"
-               (mapcar #'notmuch-calendar-email-link attendees-list))
-
-        (let ((sequence (+ 1 (string-to-number
-                              (or (cdar (org-entry-properties (point) "SEQUENCE")) "-1"))))
-              (uid (org-id-get-create))) ;; don't actually need UID?
-          (org-set-property "SEQUENCE" (number-to-string sequence))
-          (save-excursion
-            (let ((headline (nth 4 (org-heading-components)))
-                  (entry-properties (org-entry-properties))
-                  (cal-file (save-restriction
-                              (org-narrow-to-subtree)
-                              (org-icalendar-export-to-ics nil nil nil)))
-                  cal-string)
-              (with-temp-buffer
-                (insert-file-contents cal-file nil)
-                (with-current-buffer
-                    (icalendar--get-unfolded-buffer (current-buffer))
-                  (goto-char (point-min))
-                  (goto-char (point-min))
-
-                  (save-excursion
-                    (search-forward-regexp (rx bol "BEGIN:VCALENDAR" eol))
-                    (end-of-line)
-                    (insert "\nMETHOD:REQUEST"))
-
-                  (search-forward-regexp (rx bol "BEGIN:VEVENT" eol))
-                  (end-of-line)
-                  (insert
-                    "\n" "ORGANIZER;" (notmuch-calendar--format-email organizer))
-
-                  (dolist (attendee attendees-list)
-                    (insert "\n"
-                            (mapconcat
-                             #'identity
-                             (list
-                              "ATTENDEE"
-                              "ROLE=REQ-PARTICIPANT"
-                              "PARTSTAT=NEEDS-ACTION"
-                              "RSVP=TRUE"
-                              (notmuch-calendar--format-email attendee))
-                             ";")))
-                  (insert "\n" "TRANSP:OPAQUE"
-                          "\n" "CLASS:PUBLIC"
-                          "\n" "STATUS:CONFIRMED"
-                          "\n" (format "SEQUENCE:%d" sequence))
-                  (goto-char (point-min))
-                  (setq cal-string (org-icalendar-fold-string (buffer-string)))
-                  (kill-buffer))
-                (notmuch-mua-new-mail)
-                (message-goto-subject)
-                (insert headline)
-                (message-goto-from)
-                (message-beginning-of-line)
-                (insert organizer)
-                (let ((here (point)))
-                  (end-of-line)
-                  (delete-region here (point)))
-
-                (message-goto-to)
-                (while attendees-list
-                  (insert (pop attendees-list))
-                  (when attendees-list (insert ", ")))
-
-                (message-goto-body)
-                (mml-insert-multipart "alternative")
-                (save-excursion
-                  (let ((start (point)))
-                    (mml-insert-tag 'part
-                                    'type "text/calendar; charset=\"utf-8\"; method=REQUEST"
-                                    'encoding "base64"
-                                    'raw "t")
-                    (let ((here (point)))
-                      (insert (encode-coding-string cal-string 'us-ascii))
-                      (save-excursion
-                        (goto-char here)
-                        (while (search-forward "\r" nil t)
-                          (replace-match ""))))
-
-                    (mml-insert-tag '/part)))
-                (save-excursion
-                  (mml-insert-part "text/plain")
-
-                  (let* ((location (cdr (assoc "LOCATION" entry-properties)))
-                         (timestamp (cdr (assoc "TIMESTAMP" entry-properties)))
-                         (scheduled (cdr (assoc "SCHEDULED" entry-properties)))
-                         (deadline (cdr (assoc "DEADLINE" entry-properties)))
-                         (time (or timestamp scheduled deadline))
-                         (attendees (cdr (assoc "ATTENDING" entry-properties)))
-                         (organizer (cdr (assoc "ORGANIZER" entry-properties))))
-
-                    (insert "Invitation to " headline "\n\n")
-                    (when location (insert "Location: " location "\n"))
-                    (when time (insert "Time / date: " time "\n"))
-                    (when organizer (insert "Organizer: " (notmuch-calendar-email-unlink organizer) "\n"))
-                    (when attendees
-                      (let* ((attendees
-                              (mapcar 'org-entry-restore-space
-                                      (org-split-string attendees "[ \t]"))))
-                        (insert "Invited: \n")
-                        (dolist (a attendees)
-                          (insert "- " (notmuch-calendar-email-unlink a) "\n"))))))
-                (add-text-properties (point-min) (point-max) '(no-illegible-text t))
-                )))))
+            (with-current-buffer output-buffer
+              (let ((here (point)))
+                (dolist (e ical-events)
+                  (funcall fun ical-contents e))
+                (list here (point))))
+            )))))
 
 
-      (defun notmuch-calendar-accept-and-capture (e)
-        (save-current-buffer (notmuch-calendar-respond 0 ?a))
-        (notmuch-calendar-capture e))
+(defun notmuch-calendar--format-email (addr)
+  (let ((addr (mail-extract-address-components addr)))
+    (format "CN=%s:MAILTO:%s"
+            (or (car addr)
+                (cadr addr))
+            (cadr addr))))
 
-      (defun notmuch-calendar-decline (e)
-        (notmuch-calendar-respond 0 ?r))
+(defun notmuch-calendar-current-organizer ()
+  (let* ((cur
+          (notmuch-calendar-email-unlink (cdr (assoc "ORGANIZER" (org-entry-properties nil "ORGANIZER")))))
+         (cur (and cur (regexp-quote cur))))
+    (when cur
+      (car (remove-if-not
+            (lambda (x) (string-match-p cur x))
+            notmuch-identities)))))
 
-      (defun notmuch-calendar-show-insert-part-text/calendar (msg part content-type nth depth button)
-        (let ((output-buffer (current-buffer)))
-          (with-temp-buffer
-            (insert (notmuch-get-bodypart-text msg part notmuch-show-process-crypto))
-            ;; notmuch-get-bodypart-text does no newline conversion.
-            ;; Replace CRLF with LF before icalendar can use it.
+(defun notmuch-calendar-current-attendees ()
+  (let ((cur (org-entry-get-multivalued-property (point) "ATTENDING")) out)
+    (mapconcat #'identity (mapcar #'notmuch-calendar-email-unlink cur) ", ")))
+
+(defun icalendar--get-event-attendees (e)
+  (let ((props (car (cddr e))))
+    (cl-loop for prop in props
+             when (eq (car prop) 'ATTENDEE)
+             collect (cdr prop))))
+
+(defun notmuch-calendar-update-reply (e)
+  (let* ((props (overlay-properties e))
+         (cal (car (plist-get props 'calendar-object)))
+         (evt (plist-get props 'calendar-event))
+         (uid (icalendar--get-event-property evt 'UID))
+         (uid2 (progn (when
+                          (string-match (rx bos (* alnum) "-" (group (* (| alnum "-"))) eos) uid)
+                        (match-string 1 uid))))
+         (entry (org-id-find uid2 t)))
+    (unless entry (error (format "No entry for UID: %s" uid2)))
+    (pop-to-buffer (marker-buffer entry))
+    (goto-char (marker-position entry))
+    (set-marker entry nil)
+    ;; update properties for attending?
+    (let ((existing-attendees (mapcar #'notmuch-calendar-email-unlink
+                                      (org-entry-get-multivalued-property (point) "ATTENDING")))
+          (new-attendees (icalendar--get-event-attendees evt)))
+      (dolist (a new-attendees)
+        (let* ((a-props (car a))
+               (a-mail (cadr a))
+               (state (plist-get a-props 'PARTSTAT))
+               (addr (notmuch-calendar-email-unlink
+                      (notmuch-calendar-email-link a-mail))))
+          (message "%s" state)
+          (cond
+            ((equal state "ACCEPTED")
+             (unless (member addr existing-attendees)
+               (push addr existing-attendees)))
+            (t (message "wat: %s" state))
+            )))
+      (message "%s" existing-attendees)
+      (apply #'org-entry-put-multivalued-property (point) "ATTENDING"
+             (mapcar #'notmuch-calendar-email-link existing-attendees)))
+    ))
+
+(defun notmuch-calendar-send-invitation-from-org (organizer attendees-list)
+  (interactive
+   (list (completing-read "Organizer: " notmuch-identities nil nil (notmuch-calendar-current-organizer))
+         (completing-read-multiple "Invite: " (notmuch-address-options "")
+                                   nil nil (notmuch-calendar-current-attendees))))
+
+  (unless organizer (error "No organizer"))
+  (unless attendees-list (error "No attendees"))
+
+  (org-set-property "ORGANIZER" (notmuch-calendar-email-link organizer))
+  (apply #'org-entry-put-multivalued-property (point) "ATTENDING"
+         (mapcar #'notmuch-calendar-email-link attendees-list))
+
+  (let ((sequence (+ 1 (string-to-number
+                        (or (cdar (org-entry-properties (point) "SEQUENCE")) "-1"))))
+        (uid (org-id-get-create))) ;; don't actually need UID?
+    (org-set-property "SEQUENCE" (number-to-string sequence))
+    (save-excursion
+      (let ((headline (nth 4 (org-heading-components)))
+            (entry-properties (org-entry-properties))
+            (cal-file (save-restriction
+                        (org-narrow-to-subtree)
+                        (org-icalendar-export-to-ics nil nil nil)))
+            cal-string)
+        (with-temp-buffer
+          (insert-file-contents cal-file nil)
+          (with-current-buffer
+              (icalendar--get-unfolded-buffer (current-buffer))
             (goto-char (point-min))
-            (while (re-search-forward "\r\n" nil t)
-              (replace-match "\n" nil nil))
-            ;; insert buttons:
-            (notmuch-calendar-icalendar-render
-             output-buffer
-             (lambda (c e)         
-               (message "insert button")
-               (notmuch-calendar-event-insert-agenda c e)
-               (insert "--------------\n")
-               (notmuch-calendar-event-insert-buttons c e)))
-            )
-          t))
+            (goto-char (point-min))
 
-      (fset 'notmuch-show-insert-part-text/calendar
-            #'notmuch-calendar-show-insert-part-text/calendar)
+            (save-excursion
+              (search-forward-regexp (rx bol "BEGIN:VCALENDAR" eol))
+              (end-of-line)
+              (insert "\nMETHOD:REQUEST"))
 
-      (provide 'notmuch-calendar-x)
+            (search-forward-regexp (rx bol "CALSCALE:GREGORIAN" eol))
+            (end-of-line)
+            (insert
+              "\n" "BEGIN:VTIMEZONE"
+              "\n" "TZID:" (org-icalendar-cleanup-string org-icalendar-timezone)
+              "\n" "END:VTIMEZONE")
 
-      ;;; notmuch-calendar-2.el ends here
+            (search-forward-regexp (rx bol "BEGIN:VEVENT" eol))
+            (end-of-line)
+            (insert
+              "\n" "ORGANIZER;" (notmuch-calendar--format-email organizer))
 
-      (defun org-goto-path (path &optional ff-command)
-          "Find / create an org heading. PATH is a list of strings.
-      First string is a filename, subsequent strings are heading names, each being
-      a subheading of the last. Return the buffer, which will be positioned at the heading."
-          (let ((ff-command (or ff-command #'find-file))
-                (start (car path))
-                (path (cdr path)))
-            (with-current-buffer
-                (funcall ff-command start)
-              (save-restriction
-                (widen)
-                (goto-char (point-min))
-                (cl-loop for part in path
-                         for ix from 2
-                         do
-                         (setq part (format "%s %s" (make-string ix ?*) part))
-                         (unless (search-forward-regexp (rx-to-string `(seq bol ,part)) nil t)
-                           (goto-char (point-max))
-                           (insert "\n" part)
-                           (unless (looking-at "\n")
-                             (save-excursion (insert "\n"))))
-                         (beginning-of-line)
-                         (org-narrow-to-element)))
-              (current-buffer))))
+            (dolist (attendee attendees-list)
+              (insert "\n"
+                      (mapconcat
+                       #'identity
+                       (list
+                        "ATTENDEE"
+                        "ROLE=REQ-PARTICIPANT"
+                        "PARTSTAT=NEEDS-ACTION"
+                        "RSVP=TRUE"
+                        (notmuch-calendar--format-email attendee))
+                       ";")))
+            (insert "\n" "TRANSP:OPAQUE"
+                    "\n" "CLASS:PUBLIC"
+                    "\n" "STATUS:CONFIRMED"
+                    "\n" (format "SEQUENCE:%d" sequence))
+            (goto-char (point-min))
+            (setq cal-string (org-icalendar-fold-string (buffer-string)))
+            (kill-buffer))
+          (notmuch-mua-new-mail)
+          (message-goto-subject)
+          (insert headline)
+          (message-goto-from)
+          (message-beginning-of-line)
+          (insert organizer)
+          (let ((here (point)))
+            (end-of-line)
+            (delete-region here (point)))
 
-      (provide 'org-util)
+          (message-goto-to)
+          (while attendees-list
+            (insert (pop attendees-list))
+            (when attendees-list (insert ", ")))
+
+          (message-goto-body)
+          (mml-insert-multipart "alternative")
+          (save-excursion
+            (let ((start (point)))
+              (mml-insert-tag 'part
+                              'type "text/calendar; charset=\"utf-8\"; method=REQUEST"
+                              'encoding "base64"
+                              'raw "t")
+              (let ((here (point)))
+                (insert (encode-coding-string cal-string 'us-ascii))
+                (save-excursion
+                  (goto-char here)
+                  (while (search-forward "\r" nil t)
+                    (replace-match ""))))
+
+              (mml-insert-tag '/part)))
+          (save-excursion
+            (mml-insert-part "text/plain")
+
+            (let* ((location (cdr (assoc "LOCATION" entry-properties)))
+                   (timestamp (cdr (assoc "TIMESTAMP" entry-properties)))
+                   (scheduled (cdr (assoc "SCHEDULED" entry-properties)))
+                   (deadline (cdr (assoc "DEADLINE" entry-properties)))
+                   (time (or timestamp scheduled deadline))
+                   (attendees (cdr (assoc "ATTENDING" entry-properties)))
+                   (organizer (cdr (assoc "ORGANIZER" entry-properties))))
+
+              (insert "Invitation to " headline "\n\n")
+              (when location (insert "Location: " location "\n"))
+              (when time (insert "Time / date: " time "\n"))
+              (when organizer (insert "Organizer: " (notmuch-calendar-email-unlink organizer) "\n"))
+              (when attendees
+                (let* ((attendees
+                        (mapcar 'org-entry-restore-space
+                                (org-split-string attendees "[ \t]"))))
+                  (insert "Invited: \n")
+                  (dolist (a attendees)
+                    (insert "- " (notmuch-calendar-email-unlink a) "\n"))))))
+          (add-text-properties (point-min) (point-max) '(no-illegible-text t))
+          )))))
+
+
+(defun notmuch-calendar-accept-and-capture (e)
+  (save-current-buffer (notmuch-calendar-respond 0 ?a))
+  (notmuch-calendar-capture e))
+
+(defun notmuch-calendar-decline (e)
+  (notmuch-calendar-respond 0 ?r))
+
+(defun notmuch-calendar-show-insert-part-text/calendar (msg part content-type nth depth button)
+  (let ((output-buffer (current-buffer)))
+    (with-temp-buffer
+      (insert (notmuch-get-bodypart-text msg part notmuch-show-process-crypto))
+      ;; notmuch-get-bodypart-text does no newline conversion.
+      ;; Replace CRLF with LF before icalendar can use it.
+      (goto-char (point-min))
+      (while (re-search-forward "\r\n" nil t)
+        (replace-match "\n" nil nil))
+      ;; insert buttons:
+      (notmuch-calendar-icalendar-render
+       output-buffer
+       (lambda (c e)         
+         (notmuch-calendar-event-insert-agenda c e)
+         (insert "--------------\n")
+         (notmuch-calendar-event-insert-buttons c e)))
+      )
+    t))
+
+(fset 'notmuch-show-insert-part-text/calendar
+      #'notmuch-calendar-show-insert-part-text/calendar)
+
+(provide 'notmuch-calendar-x)
+
+;;; notmuch-calendar-2.el ends here
+
+(defun org-goto-path (path &optional ff-command)
+    "Find / create an org heading. PATH is a list of strings.
+First string is a filename, subsequent strings are heading names, each being
+a subheading of the last. Return the buffer, which will be positioned at the heading."
+    (let ((ff-command (or ff-command #'find-file))
+          (start (car path))
+          (path (cdr path)))
+      (with-current-buffer
+          (funcall ff-command start)
+        (save-restriction
+          (widen)
+          (goto-char (point-min))
+          (cl-loop for part in path
+                   for ix from 2
+                   do
+                   (setq part (format "%s %s" (make-string ix ?*) part))
+                   (unless (search-forward-regexp (rx-to-string `(seq bol ,part)) nil t)
+                     (goto-char (point-max))
+                     (insert "\n" part)
+                     (unless (looking-at "\n")
+                       (save-excursion (insert "\n"))))
+                   (beginning-of-line)
+                   (org-narrow-to-element)))
+        (current-buffer))))
+
+(provide 'org-util)  
