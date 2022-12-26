@@ -17,7 +17,7 @@ As I am not an expierenced emacs lisper, I don't understand very much of the cod
 enough to adjust it for my need. Any help to improve this is welcome. It would be nice, if this might
 evolve to a solution for invitations with emacs/notmuch.
 
-* Working parts
+** Working parts
 
 The following parts are working as by my observations
 
@@ -26,7 +26,7 @@ The following parts are working as by my observations
 - sending invitations from an org-mode event (by M-x notmuch-calendar-send-org-invitation)
 
 
-* Not sure if it works
+** Not sure if it works
 
 - acceptance of invitations (at the moment an email is opened with the reply, 
   but I have not tested, if this is working correctly, when I send it
