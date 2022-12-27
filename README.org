@@ -42,6 +42,8 @@ evolve to a solution for invitations with emacs/notmuch.
   with this, the timezone was correctly handled at least by mailbox.org.
   To adjust the timezone, the var org-icalendar-timezone should be set.
 
+- I have not tested repeated appointments (I don't think, they will work)
+
 ** not implemented
 
 - tentative replies
